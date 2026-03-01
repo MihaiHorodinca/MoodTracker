@@ -238,5 +238,22 @@
   </footer>
 
   <script src="js/app.js"></script>
+
+  <!-- ===================== PATTERN LOCK MODAL ===================== -->
+  <div id="pattern-modal" class="pattern-overlay" role="dialog"
+       aria-modal="true" aria-labelledby="pattern-title" style="display:none;">
+    <div class="pattern-sheet">
+      <h2 class="pattern-title" id="pattern-title"></h2>
+      <p  class="pattern-subtitle" id="pattern-subtitle"></p>
+      <div class="pattern-stage" id="pattern-stage">
+        <!-- 9 dot divs injected by JS -->
+        <svg class="pattern-svg" id="pattern-svg"
+             xmlns="http://www.w3.org/2000/svg" aria-hidden="true"></svg>
+      </div>
+      <p class="pattern-status" id="pattern-status" aria-live="assertive"></p>
+      <button type="button" class="btn-pattern-cancel" id="btn-pattern-cancel">Cancel</button>
+    </div>
+  </div>
+
 </body>
 </html>

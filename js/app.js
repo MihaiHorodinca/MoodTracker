@@ -36,6 +36,322 @@ async function removeEntry(id) {
   if (error) throw error;
 }
 
+// ---------- Pattern Lock — Supabase helpers --------------- //
+async function fetchPattern(username) {
+  const { data, error } = await db
+    .from('user_patterns')
+    .select('pattern_hash')
+    .eq('username', username)
+    .maybeSingle();
+  if (error) throw error;
+  return data; // { pattern_hash } or null
+}
+
+async function savePattern(username, hash) {
+  const { error } = await db
+    .from('user_patterns')
+    .insert([{ username, pattern_hash: hash }]);
+  if (error) throw error;
+}
+
+// ---------- Pattern Lock — Browser hashing ---------------- //
+async function hashPattern(indices) {
+  const buf = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(indices.join(','))
+  );
+  return Array.from(new Uint8Array(buf))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+// ---------- Pattern Lock — Grid constants ----------------- //
+const PATTERN_MAX_RETRIES = 5;
+
+// Center coordinates (px) within the 240×240 stage
+const DOT_CENTERS = [
+  { x:  40, y:  40 }, { x: 120, y:  40 }, { x: 200, y:  40 },
+  { x:  40, y: 120 }, { x: 120, y: 120 }, { x: 200, y: 120 },
+  { x:  40, y: 200 }, { x: 120, y: 200 }, { x: 200, y: 200 },
+];
+
+// ---------- Pattern Lock — Grid rendering / interaction --- //
+let isDrawing         = false;
+let activeDots        = [];
+let _onPatternEnd     = null;
+let _onPatternCancel  = null;
+let _dotsBuilt        = false;
+
+function buildPatternDots() {
+  if (_dotsBuilt) return;
+  const stage = document.getElementById('pattern-stage');
+  DOT_CENTERS.forEach((c, i) => {
+    const dot = document.createElement('div');
+    dot.className = 'pattern-dot';
+    dot.dataset.idx = i;
+    dot.style.left = c.x + 'px';
+    dot.style.top  = c.y + 'px';
+    stage.insertBefore(dot, document.getElementById('pattern-svg'));
+  });
+  _dotsBuilt = true;
+}
+
+function resetPatternGrid() {
+  isDrawing  = false;
+  activeDots = [];
+  document.querySelectorAll('.pattern-dot').forEach(d => {
+    d.classList.remove('active', 'error');
+  });
+  const svg = document.getElementById('pattern-svg');
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  setPatternStatus('');
+}
+
+function setPatternStatus(msg, type = '') {
+  const el = document.getElementById('pattern-status');
+  el.textContent = msg;
+  el.className = 'pattern-status' + (type ? ' ' + type : '');
+}
+
+function flashError(msg) {
+  setPatternStatus(msg, 'error');
+  document.querySelectorAll('.pattern-dot.active').forEach(d => {
+    d.classList.remove('active');
+    d.classList.add('error');
+  });
+  setTimeout(() => resetPatternGrid(), 700);
+}
+
+function _makeLine(cls, x1, y1, x2, y2) {
+  const svg  = document.getElementById('pattern-svg');
+  const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+  line.setAttribute('class', cls);
+  line.setAttribute('x1', x1); line.setAttribute('y1', y1);
+  line.setAttribute('x2', x2); line.setAttribute('y2', y2);
+  svg.appendChild(line);
+  return line;
+}
+
+function drawCommittedLine(fromIdx, toIdx) {
+  const a = DOT_CENTERS[fromIdx], b = DOT_CENTERS[toIdx];
+  _makeLine('pattern-line', a.x, a.y, b.x, b.y);
+}
+
+let _liveLine = null;
+function updateLiveLine(stageX, stageY) {
+  if (!activeDots.length) return;
+  const last = DOT_CENTERS[activeDots[activeDots.length - 1]];
+  if (_liveLine) _liveLine.remove();
+  _liveLine = _makeLine('pattern-line-live', last.x, last.y, stageX, stageY);
+}
+
+function getCoords(e) {
+  if (e.touches && e.touches.length > 0) {
+    return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  }
+  return { x: e.clientX, y: e.clientY };
+}
+
+function getHitDot(clientX, clientY) {
+  const stage = document.getElementById('pattern-stage');
+  const rect  = stage.getBoundingClientRect();
+  const sx = clientX - rect.left;
+  const sy = clientY - rect.top;
+  for (let i = 0; i < DOT_CENTERS.length; i++) {
+    const c  = DOT_CENTERS[i];
+    const dx = sx - c.x, dy = sy - c.y;
+    if (Math.sqrt(dx * dx + dy * dy) < 28) return i;
+  }
+  return null;
+}
+
+function _onPointerStart(e) {
+  e.preventDefault();
+  isDrawing = true;
+  resetPatternGrid();
+  isDrawing = true; // resetPatternGrid sets it false — re-enable
+  const { x, y } = getCoords(e);
+  const idx = getHitDot(x, y);
+  if (idx !== null) {
+    activeDots.push(idx);
+    document.querySelector(`.pattern-dot[data-idx="${idx}"]`).classList.add('active');
+  }
+}
+
+function _onPointerMove(e) {
+  if (!isDrawing) return;
+  e.preventDefault();
+  const { x, y } = getCoords(e);
+  const idx = getHitDot(x, y);
+  if (idx !== null && !activeDots.includes(idx)) {
+    if (activeDots.length) drawCommittedLine(activeDots[activeDots.length - 1], idx);
+    activeDots.push(idx);
+    document.querySelector(`.pattern-dot[data-idx="${idx}"]`).classList.add('active');
+  }
+  // Update dashed live line
+  if (activeDots.length) {
+    const stage = document.getElementById('pattern-stage');
+    const rect  = stage.getBoundingClientRect();
+    updateLiveLine(x - rect.left, y - rect.top);
+  }
+}
+
+function _onPointerEnd() {
+  if (!isDrawing) return;
+  isDrawing = false;
+  if (_liveLine) { _liveLine.remove(); _liveLine = null; }
+  if (_onPatternEnd) _onPatternEnd(activeDots.slice());
+}
+
+// ---------- Pattern Lock — Modal open / close ------------- //
+function openPatternModal({ title, subtitle, onPatternEnd, onCancel }) {
+  buildPatternDots();
+  resetPatternGrid();
+
+  document.getElementById('pattern-title').textContent    = title;
+  document.getElementById('pattern-subtitle').textContent = subtitle;
+  _onPatternEnd    = onPatternEnd;
+  _onPatternCancel = onCancel;
+
+  const stage = document.getElementById('pattern-stage');
+  stage.addEventListener('mousedown',  _onPointerStart);
+  stage.addEventListener('touchstart', _onPointerStart, { passive: false });
+  stage.addEventListener('mousemove',  _onPointerMove);
+  stage.addEventListener('touchmove',  _onPointerMove,  { passive: false });
+  window.addEventListener('mouseup',   _onPointerEnd);
+  window.addEventListener('touchend',  _onPointerEnd);
+
+  document.getElementById('btn-pattern-cancel').onclick = () => {
+    closePatternModal();
+    if (_onPatternCancel) _onPatternCancel();
+  };
+
+  document.getElementById('pattern-modal').style.display = 'flex';
+}
+
+function closePatternModal() {
+  document.getElementById('pattern-modal').style.display = 'none';
+  const stage = document.getElementById('pattern-stage');
+  stage.removeEventListener('mousedown',  _onPointerStart);
+  stage.removeEventListener('touchstart', _onPointerStart);
+  stage.removeEventListener('mousemove',  _onPointerMove);
+  stage.removeEventListener('touchmove',  _onPointerMove);
+  window.removeEventListener('mouseup',  _onPointerEnd);
+  window.removeEventListener('touchend', _onPointerEnd);
+  resetPatternGrid();
+}
+
+// ---------- Pattern Lock — First-time (set) flow ---------- //
+function runSetFlow(lower) {
+  return new Promise(resolve => {
+    let phase     = 'draw'; // 'draw' | 'confirm'
+    let firstHash = null;
+
+    function handleEnd(dots) {
+      if (dots.length < 4) {
+        flashError('Connect at least 4 dots');
+        return;
+      }
+      hashPattern(dots).then(hash => {
+        if (phase === 'draw') {
+          firstHash = hash;
+          phase = 'confirm';
+          document.getElementById('pattern-subtitle').textContent =
+            'Draw the same pattern again to confirm';
+          resetPatternGrid();
+          isDrawing = false;
+        } else {
+          // Confirm phase
+          if (hash !== firstHash) {
+            flashError('Patterns don\'t match — try again');
+            setTimeout(() => {
+              document.getElementById('pattern-subtitle').textContent =
+                'Draw the same pattern again to confirm';
+            }, 750);
+            return;
+          }
+          // Patterns match — save
+          savePattern(lower, firstHash)
+            .then(() => {
+              closePatternModal();
+              resolve(true);
+            })
+            .catch(err => {
+              // PK collision: someone else registered this username first — fall back to verify
+              if (err?.code === '23505') {
+                closePatternModal();
+                fetchPattern(lower)
+                  .then(row => row ? runVerifyFlow(lower, row.pattern_hash).then(resolve)
+                                   : resolve(false))
+                  .catch(() => resolve(false));
+              } else {
+                flashError('Could not save pattern — try again');
+              }
+            });
+        }
+      });
+    }
+
+    openPatternModal({
+      title:        'Secure your username',
+      subtitle:     'Draw a path through at least 4 dots',
+      onPatternEnd: handleEnd,
+      onCancel:     () => resolve(false),
+    });
+  });
+}
+
+// ---------- Pattern Lock — Returning (verify) flow -------- //
+function runVerifyFlow(lower, storedHash) {
+  return new Promise(resolve => {
+    let retries = 0;
+
+    function handleEnd(dots) {
+      if (dots.length < 4) {
+        flashError('Pattern too short');
+        return;
+      }
+      hashPattern(dots).then(attempt => {
+        if (attempt === storedHash) {
+          closePatternModal();
+          resolve(true);
+        } else {
+          retries++;
+          const left = PATTERN_MAX_RETRIES - retries;
+          if (left <= 0) {
+            flashError('Too many failed attempts');
+            setTimeout(() => { closePatternModal(); resolve(false); }, 900);
+          } else {
+            flashError(`Wrong pattern — ${left} attempt${left !== 1 ? 's' : ''} left`);
+          }
+        }
+      });
+    }
+
+    openPatternModal({
+      title:        'Verify your identity',
+      subtitle:     'Draw your unlock pattern',
+      onPatternEnd: handleEnd,
+      onCancel:     () => resolve(false),
+    });
+  });
+}
+
+// ---------- Pattern Lock — Auth gate ---------------------- //
+async function requirePatternAuth(username) {
+  const lower = username.toLowerCase();
+  let existing;
+  try {
+    existing = await fetchPattern(lower);
+  } catch {
+    showToast('❌ Could not verify identity. Check your connection.');
+    return false;
+  }
+  return existing
+    ? runVerifyFlow(lower, existing.pattern_hash)
+    : runSetFlow(lower);
+}
+
 // ---------- Preset Moods ---------------------------------- //
 const PRESET_MOODS = [
   { emoji: '😊', label: 'Happy'      },
@@ -178,7 +494,14 @@ form.addEventListener('submit', async e => {
     return;
   }
 
-  // Save
+  // Pattern auth gate — disable button while we check Supabase for existing pattern
+  setSubmitLoading(true);
+  const authed = await requirePatternAuth(nameVal);
+  setSubmitLoading(false);
+
+  if (!authed) return; // user cancelled or too many attempts
+
+  // Save entry
   setSubmitLoading(true);
   try {
     const entry = {
@@ -187,10 +510,9 @@ form.addEventListener('submit', async e => {
       mood_emoji:  moodEmoji,
       intensity:   parseInt(intensitySlider.value, 10),
       description: descriptionEl.value.trim(),
-      // timestamp is set by Supabase default
     };
     await insertEntry(entry);
-    cachedEntries = null; // invalidate cache
+    cachedEntries = null;
     showToast(`✨ Logged "${moodLabel}" for ${nameVal}!`);
     resetForm();
   } catch (err) {
