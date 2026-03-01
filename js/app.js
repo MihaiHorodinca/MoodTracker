@@ -921,7 +921,7 @@ function buildEntryCard(entry) {
       <div class="entry-meta">
         <span class="entry-user">👤 ${escapeHTML(entry.name)}</span>
         <span class="entry-time">${time}</span>
-        <button class="btn-delete" data-id="${entry.id}" title="Delete entry">🗑</button>
+        <button class="btn-delete" data-id="${entry.id}" data-name="${escapeHTML(entry.name)}" title="Delete entry">🗑</button>
       </div>
     </div>
     <div class="entry-intensity">
@@ -943,10 +943,19 @@ function buildIntensityDots(intensity) {
 }
 
 async function deleteEntry(btn) {
-  const id = btn.dataset.id;
-  btn.textContent = '⏳';
-  btn.disabled    = true;
+  const id   = btn.dataset.id;
+  const name = btn.dataset.name;
 
+  // Disable immediately to prevent double-clicks while the modal is open
+  btn.disabled = true;
+
+  const authed = await requirePatternAuth(name);
+  if (!authed) {
+    btn.disabled = false;
+    return;
+  }
+
+  btn.textContent = '⏳';
   try {
     await removeEntry(id);
     cachedEntries = null;
