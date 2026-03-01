@@ -1,0 +1,11 @@
+{
+  "name": "moodbloom",
+  "version": "1.0.0",
+  "description": "A cute mood tracking web app",
+  "scripts": {
+    "start": "npx serve . -p 3000",
+    "dev": "npx serve . -p 3000 --no-clipboard"
+  },
+  "keywords": ["mood", "tracker", "wellbeing"],
+  "license": "MIT"
+}

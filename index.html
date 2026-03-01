@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MoodFlare — Track Your Mood</title>
+  <link rel="stylesheet" href="css/styles.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+  <script src="js/config.js"></script>
+</head>
+<body>
+
+  <!-- Setup Banner (shown when Supabase is not configured) -->
+  <div class="setup-banner" id="setup-banner" style="display:none;">
+    <span class="setup-banner-icon">⚙️</span>
+    <span>Supabase is not configured yet — entries won't be saved.
+      Open <code>js/config.js</code> and follow the <a href="DEPLOYMENT.md" target="_blank">setup guide</a>.
+    </span>
+  </div>
+
+  <!-- Header -->
+  <header class="site-header">
+    <div class="header-inner">
+      <div class="logo">
+        <svg class="logo-svg" width="34" height="40" viewBox="0 0 36 44" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M18 2C22 7 29 12 29 21C29 29.2 24.2 36 18 36C11.8 36 7 29.2 7 21C7 12 14 7 18 2Z" fill="url(#lgOuter)"/>
+          <path d="M18 14C20.5 17.5 23 21 23 25.5C23 29 20.9 32 18 32C15.1 32 13 29 13 25.5C13 21 15.5 17.5 18 14Z" fill="url(#lgInner)"/>
+          <ellipse cx="18" cy="28" rx="3.5" ry="4.5" fill="white" opacity="0.45"/>
+          <defs>
+            <linearGradient id="lgOuter" x1="18" y1="2" x2="18" y2="36" gradientUnits="userSpaceOnUse">
+              <stop stop-color="#fdba74"/>
+              <stop offset="0.55" stop-color="#f97316"/>
+              <stop offset="1" stop-color="#c2410c"/>
+            </linearGradient>
+            <linearGradient id="lgInner" x1="18" y1="14" x2="18" y2="32" gradientUnits="userSpaceOnUse">
+              <stop stop-color="#fff7ed"/>
+              <stop offset="1" stop-color="#fed7aa"/>
+            </linearGradient>
+          </defs>
+        </svg>
+        <div class="logo-wordmark">
+          <span class="logo-text">MoodFlare</span>
+          <span class="logo-badge">BETA</span>
+        </div>
+      </div>
+      <p class="tagline">Feel it. Log it. Understand it.</p>
+    </div>
+  </header>
+
+  <!-- Tab Navigation -->
+  <nav class="tab-nav">
+    <button class="tab-btn active" data-tab="log">
+      <span class="tab-icon">✏️</span>
+      <span>Log Mood</span>
+    </button>
+    <button class="tab-btn" data-tab="history">
+      <span class="tab-icon">📖</span>
+      <span>History</span>
+    </button>
+  </nav>
+
+  <main class="main-content">
+
+    <!-- ===================== LOG MOOD TAB ===================== -->
+    <section id="tab-log" class="tab-panel active">
+      <div class="card form-card">
+        <h2 class="card-title">How are you feeling?</h2>
+
+        <form id="mood-form" novalidate>
+
+          <!-- Name / ID -->
+          <div class="form-group">
+            <label for="user-name">Your name or ID</label>
+            <input
+              type="text"
+              id="user-name"
+              placeholder="e.g. Alex or user42"
+              autocomplete="off"
+              required
+            />
+            <span class="field-error" id="error-name"></span>
+          </div>
+
+          <!-- Mood Picker -->
+          <div class="form-group">
+            <label>Pick your mood</label>
+            <div class="mood-grid" id="mood-grid">
+              <!-- Populated by JS -->
+            </div>
+            <div class="custom-mood-wrap" id="custom-mood-wrap" style="display:none;">
+              <input
+                type="text"
+                id="custom-mood-input"
+                placeholder="Describe your feeling…"
+                maxlength="40"
+              />
+            </div>
+            <span class="field-error" id="error-mood"></span>
+          </div>
+
+          <!-- Intensity -->
+          <div class="form-group">
+            <label for="intensity">
+              Intensity
+              <span class="intensity-label" id="intensity-label">5 / 10</span>
+            </label>
+            <input
+              type="range"
+              id="intensity"
+              min="1"
+              max="10"
+              value="5"
+              class="intensity-slider"
+            />
+            <div class="intensity-ticks">
+              <span>Mild</span>
+              <span>Moderate</span>
+              <span>Strong</span>
+            </div>
+          </div>
+
+          <!-- Description -->
+          <div class="form-group">
+            <label for="description">Notes <span class="optional">(optional)</span></label>
+            <textarea
+              id="description"
+              rows="4"
+              placeholder="What's on your mind? Any context for how you feel…"
+              maxlength="500"
+            ></textarea>
+            <span class="char-count" id="char-count">0 / 500</span>
+          </div>
+
+          <button type="submit" class="btn-submit" id="btn-submit">
+            <span class="btn-icon" id="btn-submit-icon">💾</span>
+            <span id="btn-submit-text">Save Entry</span>
+          </button>
+
+        </form>
+      </div>
+
+      <!-- Success Toast -->
+      <div class="toast" id="toast" aria-live="polite"></div>
+    </section>
+
+    <!-- ===================== HISTORY TAB ===================== -->
+    <section id="tab-history" class="tab-panel" style="display:none;">
+
+      <!-- Filter Bar -->
+      <div class="card filter-card">
+
+        <!-- Header row -->
+        <div class="filter-header">
+          <span class="filter-title">Search &amp; Filter</span>
+          <button class="btn-clear-all" id="btn-clear-all" style="display:none;">Clear all</button>
+        </div>
+
+        <!-- Name search -->
+        <div class="search-row">
+          <svg class="search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+          </svg>
+          <input type="text" id="filter-name" placeholder="Search by name or ID…" autocomplete="off" />
+          <button class="btn-clear-x" id="btn-clear-filter" title="Clear search" aria-label="Clear search">✕</button>
+        </div>
+
+        <!-- Date range -->
+        <div class="filter-section">
+          <div class="filter-section-label">Date range</div>
+          <div class="date-pills-row" id="date-pills-row">
+            <button class="date-pill active" data-range="all">All time</button>
+            <button class="date-pill" data-range="today">Today</button>
+            <button class="date-pill" data-range="week">This week</button>
+            <button class="date-pill" data-range="month">This month</button>
+          </div>
+        </div>
+
+        <!-- Mood filter -->
+        <div class="filter-section" id="mood-filter-section" style="display:none;">
+          <div class="filter-section-label">Mood</div>
+          <div class="mood-pills-row" id="mood-pills-row">
+            <!-- Populated by JS -->
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Loading Spinner -->
+      <div class="spinner-wrap" id="history-spinner" style="display:none;">
+        <div class="spinner"></div>
+        <p class="spinner-label">Loading entries…</p>
+      </div>
+
+      <!-- Chart -->
+      <div class="card chart-card" id="chart-section" style="display:none;">
+        <h3 class="section-title">Mood over time</h3>
+        <div class="chart-wrap">
+          <canvas id="mood-chart"></canvas>
+        </div>
+      </div>
+
+      <!-- Stats Row -->
+      <div class="stats-row" id="stats-row" style="display:none;">
+        <div class="stat-chip" id="stat-total"></div>
+        <div class="stat-chip" id="stat-top"></div>
+        <div class="stat-chip" id="stat-streak"></div>
+      </div>
+
+      <!-- Entries List -->
+      <div id="entries-container">
+        <!-- Populated by JS -->
+      </div>
+
+      <!-- Empty State -->
+      <div class="empty-state" id="empty-state" style="display:none;">
+        <div class="empty-icon">🌱</div>
+        <p>No entries yet.<br/>Go log your first mood!</p>
+        <button class="btn-go-log" id="btn-go-log">Log a mood</button>
+      </div>
+
+      <!-- Error State -->
+      <div class="error-state" id="error-state" style="display:none;">
+        <div class="error-icon">⚠️</div>
+        <p id="error-state-msg">Something went wrong loading entries.</p>
+        <button class="btn-retry" id="btn-retry">Try again</button>
+      </div>
+
+    </section>
+
+  </main>
+
+  <footer class="site-footer">
+    <p>MoodFlare &mdash; data syncs across all your devices</p>
+  </footer>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
