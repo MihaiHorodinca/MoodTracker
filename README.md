@@ -96,6 +96,20 @@ The repo is connected to Netlify. Every push to `main` redeploys automatically i
 - **Build command:** none (static site)
 - Config is in [`netlify.toml`](./netlify.toml)
 
+#### Branch deploy previews
+
+Branch previews are **not enabled by default** — they must be turned on manually once in the Netlify dashboard:
+
+1. Go to **Site configuration → Build & deploy → Continuous deployment → Deploy contexts**
+2. Set **Branch deploys** to *All* (or *Let me add individual branches*)
+3. Save
+
+After that, every push to a feature branch automatically generates a preview URL in the format:
+```
+https://<branch-name>--moodflare.netlify.app
+```
+The preview URL is also posted as a status check on any open pull request.
+
 ### Vercel
 
 A [`vercel.json`](./vercel.json) config is also included if you prefer Vercel. Import the repo at [vercel.com/new](https://vercel.com/new) — no extra configuration needed.
