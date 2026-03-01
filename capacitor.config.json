@@ -1,0 +1,11 @@
+{
+  "appId": "com.moodflare.app",
+  "appName": "MoodFlare",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "backgroundColor": "#0a0a0a"
+  }
+}
