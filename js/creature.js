@@ -1,255 +1,347 @@
-/* creature.js — animated stem-eye creature for the left desktop sidebar */
+/* creature.js — reusable Creature class + single-loop orchestrator
+ *
+ * To add more creatures, push an entry into CREATURE_DEFS below.
+ * Each instance manages its own SVG elements, animation state, and blink timer.
+ * One shared requestAnimationFrame loop drives all instances.
+ */
 (function () {
   'use strict';
 
-  const SVG_NS = 'http://www.w3.org/2000/svg';
-  const SAMPLES = 32;          // points along the stem
-  const STEM_COLOR = '#f97316'; // --clr-primary
+  /* ── config ───────────────────────────────────────────────────────────────── */
 
-  let svg, stemPath, eyeGroup, scleraEl, irisEl, pupilEl, specEl;
-  let lidTop, lidBot;
-  let startTime = null;
-  let blinkTimer = null;
-  let isBlinking = false;
+  const CREATURE_DEFS = [
+    {
+      name:           'Fernwick',
+      color:          '#f97316',   // --clr-primary
+      rootXFrac:      0.68,        // horizontal root position within the column (0=left edge)
+      rootYFrac:      1.0,         // vertical root (1.0 = bottom edge of column)
+      stemHeightFrac: 0.72,        // stem reaches this fraction of column height
+      timeOffset:     0,           // phase offset so multiple creatures don't sync
+    },
+    // add more here, e.g.:
+    // { name: 'Mossling', color: '#86efac', rootXFrac: 0.4, rootYFrac: 0.95, stemHeightFrac: 0.45, timeOffset: 4 },
+  ];
 
-  /* ── helpers ─────────────────────────────────────────────── */
+  /* ── constants ────────────────────────────────────────────────────────────── */
+
+  const SVG_NS  = 'http://www.w3.org/2000/svg';
+  const SAMPLES = 30;   // stem sample count — determines segment count
+
+  /* ── shared helpers ───────────────────────────────────────────────────────── */
 
   function svgEl(tag, attrs) {
     const el = document.createElementNS(SVG_NS, tag);
-    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
     return el;
   }
 
-  function rand(min, max) {
-    return min + Math.random() * (max - min);
-  }
+  function rand(min, max) { return min + Math.random() * (max - min); }
+  function lerp(a, b, t)  { return a + (b - a) * t; }
+  function f(n)            { return n.toFixed(2); }
 
-  /* Catmull-Rom → cubic bezier, returns SVG path d string */
-  function catmullRomPath(pts) {
-    if (pts.length < 2) return '';
-    let d = `M ${pts[0].x} ${pts[0].y}`;
-    for (let i = 0; i < pts.length - 1; i++) {
-      const p0 = pts[Math.max(i - 1, 0)];
-      const p1 = pts[i];
-      const p2 = pts[i + 1];
-      const p3 = pts[Math.min(i + 2, pts.length - 1)];
-      const cp1x = p1.x + (p2.x - p0.x) / 6;
-      const cp1y = p1.y + (p2.y - p0.y) / 6;
-      const cp2x = p2.x - (p3.x - p1.x) / 6;
-      const cp2y = p2.y - (p3.y - p1.y) / 6;
-      d += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`;
-    }
-    return d;
-  }
-
-  /* ── init ────────────────────────────────────────────────── */
-
-  function init() {
-    const wrap = document.getElementById('creature-wrap');
-    if (!wrap) return;
-    svg = document.getElementById('creature-svg');
-    if (!svg) return;
-
-    /* glow filter */
-    const defs = svgEl('defs', {});
-    const filter = svgEl('filter', { id: 'stemGlow', x: '-50%', y: '-50%', width: '200%', height: '200%' });
-    const blur = svgEl('feGaussianBlur', { stdDeviation: '3', result: 'blur' });
+  /* Ensures exactly one <defs><filter id="cGlow"> exists in the SVG */
+  function ensureGlowFilter(svg) {
+    if (svg.querySelector('#cGlow')) return;
+    let defs = svg.querySelector('defs');
+    if (!defs) { defs = svgEl('defs', {}); svg.prepend(defs); }
+    const filter = svgEl('filter', {
+      id: 'cGlow', x: '-60%', y: '-60%', width: '220%', height: '220%',
+    });
+    const blur = svgEl('feGaussianBlur', { stdDeviation: '3', result: 'glow' });
     const merge = svgEl('feMerge', {});
-    const mn1 = svgEl('feMergeNode', { in: 'blur' });
-    const mn2 = svgEl('feMergeNode', { in: 'SourceGraphic' });
-    merge.appendChild(mn1);
-    merge.appendChild(mn2);
+    merge.appendChild(svgEl('feMergeNode', { in: 'glow' }));
+    merge.appendChild(svgEl('feMergeNode', { in: 'SourceGraphic' }));
     filter.appendChild(blur);
     filter.appendChild(merge);
     defs.appendChild(filter);
-    svg.appendChild(defs);
-
-    /* stem path */
-    stemPath = svgEl('path', {
-      fill: 'none',
-      stroke: STEM_COLOR,
-      'stroke-width': '3.5',
-      'stroke-linecap': 'round',
-      'stroke-linejoin': 'round',
-      filter: 'url(#stemGlow)',
-      opacity: '0.9',
-    });
-    svg.appendChild(stemPath);
-
-    /* eye group */
-    eyeGroup = svgEl('g', { id: 'creature-eye' });
-
-    scleraEl = svgEl('ellipse', {
-      rx: '18', ry: '14',
-      fill: '#f5efe0',
-      filter: 'url(#stemGlow)',
-    });
-
-    irisEl = svgEl('ellipse', {
-      rx: '10', ry: '10',
-      fill: STEM_COLOR,
-      opacity: '0.9',
-    });
-
-    pupilEl = svgEl('circle', {
-      r: '5',
-      fill: '#0a0a0a',
-    });
-
-    specEl = svgEl('circle', {
-      r: '2',
-      fill: 'rgba(255,255,255,0.75)',
-      cx: '2', cy: '-2',
-    });
-
-    /* eyelids — drawn as filled arcs that slide to cover the eye */
-    lidTop = svgEl('ellipse', {
-      rx: '18', ry: '14',
-      fill: '#141414',       /* matches --clr-surface */
-      'transform-origin': '0 -14',
-      style: 'transform: scaleY(0);',
-    });
-
-    lidBot = svgEl('ellipse', {
-      rx: '18', ry: '14',
-      fill: '#141414',
-      'transform-origin': '0 14',
-      style: 'transform: scaleY(0);',
-    });
-
-    pupilEl.appendChild(specEl);
-    irisEl.appendChild(pupilEl);
-    eyeGroup.appendChild(scleraEl);
-    eyeGroup.appendChild(irisEl);
-    eyeGroup.appendChild(lidTop);
-    eyeGroup.appendChild(lidBot);
-    svg.appendChild(eyeGroup);
-
-    scheduleBlink();
-    requestAnimationFrame(tick);
   }
 
-  /* ── animation loop ──────────────────────────────────────── */
+  /* ── Creature class ───────────────────────────────────────────────────────── */
 
-  function tick(ts) {
-    if (!startTime) startTime = ts;
-    const t = (ts - startTime) / 1000; // seconds
+  class Creature {
+    constructor(svg, opts, idx) {
+      this._svg           = svg;
+      this.name           = opts.name           ?? 'Unnamed';
+      this.color          = opts.color          ?? '#f97316';
+      this._rootXFrac     = opts.rootXFrac      ?? 0.65;
+      this._rootYFrac     = opts.rootYFrac      ?? 1.0;
+      this._stemHFrac     = opts.stemHeightFrac ?? 0.70;
+      this._timeOffset    = opts.timeOffset     ?? 0;
+      this._id            = `cr${idx}`;
 
-    const wrap = document.getElementById('creature-wrap');
-    if (!wrap) return;
-    const W = wrap.clientWidth;
-    const H = wrap.clientHeight;
+      /* animation state */
+      this._isBlinking    = false;
+      this._blinkTimer    = null;
 
-    if (W < 60 || H < 100) {
-      requestAnimationFrame(tick);
-      return;
+      /* SVG element refs (populated by _build) */
+      this._segments      = [];   // <line> elements for tapered stem
+      this._leaves        = [];   // { el, sFrac, side }
+      this._eyeGroup      = null; // outer <g>: receives translate+rotate each tick
+      this._eyeContent    = null; // inner <g>: scaleY-animated for blink
+      this._pupilEl       = null;
+      this._specEl        = null;
+      this._labelEl       = null;
+
+      this._build();
+      this._scheduleBlink();
     }
 
-    /* stem parameters */
-    const stemHeight = H * 0.72;
-    const rootX = W * 0.62;   // root near right edge (leans toward app)
-    const rootY = H;
+    /* ── build (runs once) ──────────────────────────────────────────────────── */
 
-    /* sample stem points from root (s=0) to tip (s=1) */
-    const pts = [];
-    for (let i = 0; i <= SAMPLES; i++) {
-      const s = i / SAMPLES;           // 0 = root, 1 = tip
-      const y = rootY - s * stemHeight;
+    _build() {
+      const svg   = this._svg;
+      const color = this.color;
 
-      /* two sine waves create the winding */
-      const A1 = W * 0.28, f1 = 1.4, spd1 = 0.28;
-      const A2 = W * 0.12, f2 = 3.1, spd2 = 0.51;
-      const waveX = A1 * Math.sin(f1 * s * Math.PI * 2 + t * spd1)
-                  + A2 * Math.sin(f2 * s * Math.PI * 2 + t * spd2);
+      /* root <g> for this creature — keeps z-order: segments → leaves → eye → label */
+      const root = svgEl('g', { id: this._id });
+      svg.appendChild(root);
 
-      pts.push({ x: rootX + waveX, y });
-    }
-
-    stemPath.setAttribute('d', catmullRomPath(pts));
-
-    /* tip & tangent */
-    const tip = pts[SAMPLES];
-    const prev = pts[SAMPLES - 1];
-    const dx = tip.x - prev.x;
-    const dy = tip.y - prev.y;
-    const angle = Math.atan2(dy, dx) * 180 / Math.PI + 90; // rotate so "up" aligns
-
-    /* pupil offset follows stem tangent + slow wander */
-    const wanderX = 3.5 * Math.sin(t * 0.37);
-    const wanderY = 2.5 * Math.cos(t * 0.53);
-    const normLen = Math.sqrt(dx * dx + dy * dy) || 1;
-    const pupilMaxOffset = 6;
-    const pOffX = (dx / normLen) * pupilMaxOffset + wanderX;
-    const pOffY = (dy / normLen) * pupilMaxOffset + wanderY;
-
-    /* position eye group at tip */
-    eyeGroup.setAttribute('transform', `translate(${tip.x}, ${tip.y}) rotate(${angle})`);
-    pupilEl.setAttribute('cx', pOffX);
-    pupilEl.setAttribute('cy', pOffY);
-    specEl.setAttribute('cx', pOffX + 2);
-    specEl.setAttribute('cy', pOffY - 2);
-
-    requestAnimationFrame(tick);
-  }
-
-  /* ── blinking ────────────────────────────────────────────── */
-
-  function doBlink() {
-    if (isBlinking) return;
-    isBlinking = true;
-
-    const DUR = 200; // ms for one lid to close
-    const HOLD = 80;
-    const steps = 12;
-
-    let frame = 0;
-    function closeStep() {
-      if (frame > steps) {
-        // hold closed briefly then open
-        setTimeout(openLids, HOLD);
-        return;
+      /* stem: SAMPLES pre-created <line> segments, width set per-tick */
+      for (let i = 0; i < SAMPLES; i++) {
+        const seg = svgEl('line', {
+          stroke:         color,
+          'stroke-linecap': 'round',
+          filter:         'url(#cGlow)',
+          opacity:        '0.88',
+        });
+        root.appendChild(seg);
+        this._segments.push(seg);
       }
-      const progress = frame / steps;
-      const s = Math.sin(progress * Math.PI / 2); // ease in
-      lidTop.style.transform = `scaleY(${s})`;
-      lidBot.style.transform = `scaleY(${s})`;
-      frame++;
-      setTimeout(closeStep, DUR / steps);
-    }
 
-    function openLids() {
-      let f = steps;
-      function openStep() {
-        if (f < 0) {
-          lidTop.style.transform = 'scaleY(0)';
-          lidBot.style.transform = 'scaleY(0)';
-          isBlinking = false;
-          scheduleBlink();
-          return;
+      /* leaves: 3 pairs (left + right) at s = 0.28, 0.52, 0.70 */
+      /* leaf shape: pointed almond, base at (0,0), tip at (0,-26) */
+      const LEAF_D = 'M 0 0 C 10 -6 10 -20 0 -26 C -10 -20 -10 -6 0 0 Z';
+      for (const sFrac of [0.28, 0.52, 0.70]) {
+        for (const side of [-1, 1]) {
+          const leaf = svgEl('path', {
+            d:       LEAF_D,
+            fill:    color,
+            opacity: '0.48',
+          });
+          root.appendChild(leaf);
+          this._leaves.push({ el: leaf, sFrac, side });
         }
-        const progress = f / steps;
-        const s = Math.sin(progress * Math.PI / 2);
-        lidTop.style.transform = `scaleY(${s})`;
-        lidBot.style.transform = `scaleY(${s})`;
-        f--;
-        setTimeout(openStep, DUR / steps);
       }
-      openStep();
+
+      /* eye: outer group (translate + rotate), inner group (scaleY blink) */
+      const eyeGroup = svgEl('g', {});
+
+      const eyeContent = svgEl('g', {});
+      Object.assign(eyeContent.style, {
+        transformBox:    'fill-box',
+        transformOrigin: 'center',
+        transform:       'scaleY(1)',
+      });
+
+      const sclera = svgEl('ellipse', {
+        rx: 18, ry: 14,
+        fill:   '#f0ebe0',
+        filter: 'url(#cGlow)',
+      });
+
+      const iris = svgEl('ellipse', {
+        rx: 10, ry: 10,
+        fill:    color,
+        opacity: '0.92',
+      });
+
+      const pupil = svgEl('circle', {
+        r:    5,
+        fill: '#0a0a0a',
+      });
+
+      const spec = svgEl('circle', {
+        r:    1.8,
+        fill: 'rgba(255,255,255,0.85)',
+      });
+
+      eyeContent.appendChild(sclera);
+      eyeContent.appendChild(iris);
+      eyeContent.appendChild(pupil);
+      eyeContent.appendChild(spec);
+      eyeGroup.appendChild(eyeContent);
+      root.appendChild(eyeGroup);
+
+      /* name label: floats just below the eye, updated per tick */
+      const label = svgEl('text', {
+        'font-family':    'Nunito, system-ui, sans-serif',
+        'font-size':      '10.5',
+        'font-style':     'italic',
+        'letter-spacing': '1.2',
+        fill:             color,
+        opacity:          '0.52',
+        'text-anchor':    'middle',
+      });
+      label.textContent = this.name;
+      root.appendChild(label);
+
+      this._eyeGroup   = eyeGroup;
+      this._eyeContent = eyeContent;
+      this._pupilEl    = pupil;
+      this._specEl     = spec;
+      this._labelEl    = label;
     }
 
-    closeStep();
+    /* ── tick (called every rAF frame) ─────────────────────────────────────── */
+
+    tick(t, W, H) {
+      const T       = t + this._timeOffset;
+      const rootX   = W * this._rootXFrac;
+      const rootY   = H * this._rootYFrac;
+      const stemH   = H * this._stemHFrac;
+
+      /* sample stem points: s=0 at root, s=1 at tip */
+      const pts = [];
+      for (let i = 0; i <= SAMPLES; i++) {
+        const s = i / SAMPLES;
+        const y = rootY - s * stemH;
+
+        /* two sine waves with different frequencies produce organic winding */
+        const A1 = W * 0.16, f1 = 1.3, spd1 = 0.24;
+        const A2 = W * 0.07, f2 = 3.1, spd2 = 0.47;
+        const waveX = A1 * Math.sin(f1 * s * Math.PI * 2 + T * spd1)
+                    + A2 * Math.sin(f2 * s * Math.PI * 2 + T * spd2);
+        pts.push({ x: rootX + waveX, y });
+      }
+
+      /* update tapered stem segments */
+      for (let i = 0; i < SAMPLES; i++) {
+        const s  = i / SAMPLES;
+        const sw = lerp(5.5, 1.1, s);
+        const seg = this._segments[i];
+        seg.setAttribute('x1', f(pts[i].x));
+        seg.setAttribute('y1', f(pts[i].y));
+        seg.setAttribute('x2', f(pts[i + 1].x));
+        seg.setAttribute('y2', f(pts[i + 1].y));
+        seg.setAttribute('stroke-width', f(sw));
+      }
+
+      /* update leaves */
+      for (const { el, sFrac, side } of this._leaves) {
+        const si    = Math.min(Math.round(sFrac * SAMPLES), SAMPLES - 1);
+        const pt    = pts[si];
+        const ptN   = pts[Math.min(si + 1, SAMPLES)];
+        /* stem tangent angle at this position */
+        const stemAngle = Math.atan2(ptN.y - pt.y, ptN.x - pt.x) * 180 / Math.PI;
+        /* leaf grows 45° outward from the perpendicular to the stem */
+        const leafAngle = stemAngle + 90 + side * 45;
+        const scale     = lerp(1.1, 0.52, sFrac);
+        el.setAttribute('transform',
+          `translate(${f(pt.x)},${f(pt.y)}) rotate(${f(leafAngle)}) scale(${scale.toFixed(3)})`
+        );
+      }
+
+      /* tip tangent for eye orientation */
+      const tip  = pts[SAMPLES];
+      const prev = pts[SAMPLES - 1];
+      const dx   = tip.x - prev.x;
+      const dy   = tip.y - prev.y;
+      const eyeAngle  = Math.atan2(dy, dx) * 180 / Math.PI + 90;
+
+      /* pupil drifts in the tangent direction + slow Lissajous wander */
+      const normLen = Math.hypot(dx, dy) || 1;
+      const pOffX   = (dx / normLen) * 5.5 + 3.2 * Math.sin(T * 0.38);
+      const pOffY   = (dy / normLen) * 5.5 + 2.4 * Math.cos(T * 0.55);
+
+      this._eyeGroup.setAttribute('transform',
+        `translate(${f(tip.x)},${f(tip.y)}) rotate(${f(eyeAngle)})`
+      );
+      this._pupilEl.setAttribute('cx', f(pOffX));
+      this._pupilEl.setAttribute('cy', f(pOffY));
+      this._specEl.setAttribute('cx',  f(pOffX + 1.8));
+      this._specEl.setAttribute('cy',  f(pOffY - 1.8));
+
+      /* name label floats just below the eye, stays upright */
+      this._labelEl.setAttribute('x', f(tip.x));
+      this._labelEl.setAttribute('y', f(tip.y + 30));
+    }
+
+    /* ── blink ──────────────────────────────────────────────────────────────── */
+
+    _scheduleBlink() {
+      clearTimeout(this._blinkTimer);
+      this._blinkTimer = setTimeout(() => this._doBlink(), rand(3000, 7500));
+    }
+
+    _doBlink() {
+      if (this._isBlinking) return;
+      this._isBlinking = true;
+
+      const CLOSE_MS = 150;
+      const HOLD_MS  = 85;
+      const OPEN_MS  = 120;
+      const STEPS    = 10;
+
+      const setScale = (progress) => {
+        /* progress 0 = fully open (scaleY 1), progress 1 = fully closed (scaleY 0.04) */
+        const sy = lerp(1, 0.04, progress);
+        this._eyeContent.style.transform = `scaleY(${sy.toFixed(4)})`;
+      };
+
+      let step = 0;
+
+      const closeStep = () => {
+        setScale(Math.sin((step / STEPS) * Math.PI / 2));
+        if (step >= STEPS) {
+          setScale(1);
+          setTimeout(openPhase, HOLD_MS);
+        } else {
+          step++;
+          setTimeout(closeStep, CLOSE_MS / STEPS);
+        }
+      };
+
+      const openPhase = () => {
+        step = STEPS;
+        const openStep = () => {
+          setScale(Math.sin((step / STEPS) * Math.PI / 2));
+          if (step <= 0) {
+            setScale(0);
+            this._isBlinking = false;
+            this._scheduleBlink();
+          } else {
+            step--;
+            setTimeout(openStep, OPEN_MS / STEPS);
+          }
+        };
+        openStep();
+      };
+
+      closeStep();
+    }
   }
 
-  function scheduleBlink() {
-    if (blinkTimer) clearTimeout(blinkTimer);
-    blinkTimer = setTimeout(doBlink, rand(3000, 7500));
-  }
+  /* ── orchestrator ─────────────────────────────────────────────────────────── */
 
-  /* ── bootstrap ───────────────────────────────────────────── */
+  function init() {
+    const wrap = document.getElementById('creature-wrap');
+    const svg  = document.getElementById('creature-svg');
+    if (!wrap || !svg) return;
+
+    ensureGlowFilter(svg);
+
+    const instances = CREATURE_DEFS.map((def, i) => new Creature(svg, def, i));
+
+    let startTime = null;
+
+    function loop(ts) {
+      if (!startTime) startTime = ts;
+      const t = (ts - startTime) / 1000;
+      const W = wrap.clientWidth;
+      const H = wrap.clientHeight;
+      if (W >= 60 && H >= 100) {
+        for (const c of instances) c.tick(t, W, H);
+      }
+      requestAnimationFrame(loop);
+    }
+
+    requestAnimationFrame(loop);
+  }
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
   } else {
     init();
   }
+
 })();
