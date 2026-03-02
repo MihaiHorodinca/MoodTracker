@@ -25,7 +25,7 @@
   /* ── constants ────────────────────────────────────────────────────────────── */
 
   const SVG_NS  = 'http://www.w3.org/2000/svg';
-  const SAMPLES = 30;   // stem sample count — determines segment count
+  const SAMPLES = 32;   // stem sample count
 
   /* ── shared helpers ───────────────────────────────────────────────────────── */
 
@@ -38,6 +38,24 @@
   function rand(min, max) { return min + Math.random() * (max - min); }
   function lerp(a, b, t)  { return a + (b - a) * t; }
   function f(n)            { return n.toFixed(2); }
+
+  /* Catmull-Rom spline → SVG cubic bezier path string */
+  function catmullRomPath(pts) {
+    if (pts.length < 2) return '';
+    let d = `M ${pts[0].x} ${pts[0].y}`;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[Math.max(i - 1, 0)];
+      const p1 = pts[i];
+      const p2 = pts[i + 1];
+      const p3 = pts[Math.min(i + 2, pts.length - 1)];
+      const cp1x = p1.x + (p2.x - p0.x) / 6;
+      const cp1y = p1.y + (p2.y - p0.y) / 6;
+      const cp2x = p2.x - (p3.x - p1.x) / 6;
+      const cp2y = p2.y - (p3.y - p1.y) / 6;
+      d += ` C ${f(cp1x)} ${f(cp1y)}, ${f(cp2x)} ${f(cp2y)}, ${f(p2.x)} ${f(p2.y)}`;
+    }
+    return d;
+  }
 
   /* Ensures exactly one <defs><filter id="cGlow"> exists in the SVG */
   function ensureGlowFilter(svg) {
@@ -68,13 +86,14 @@
       this._stemHFrac     = opts.stemHeightFrac ?? 0.70;
       this._timeOffset    = opts.timeOffset     ?? 0;
       this._id            = `cr${idx}`;
+      this._footer        = document.querySelector('.site-footer');
 
       /* animation state */
       this._isBlinking    = false;
       this._blinkTimer    = null;
 
       /* SVG element refs (populated by _build) */
-      this._segments      = [];   // <line> elements for tapered stem
+      this._stemPath      = null; // single <path> for the stem
       this._leaves        = [];   // { el, sFrac, side }
       this._eyeGroup      = null; // outer <g>: receives translate+rotate each tick
       this._eyeContent    = null; // inner <g>: scaleY-animated for blink
@@ -96,17 +115,17 @@
       const root = svgEl('g', { id: this._id });
       svg.appendChild(root);
 
-      /* stem: SAMPLES pre-created <line> segments, width set per-tick */
-      for (let i = 0; i < SAMPLES; i++) {
-        const seg = svgEl('line', {
-          stroke:         color,
-          'stroke-linecap': 'round',
-          filter:         'url(#cGlow)',
-          opacity:        '0.88',
-        });
-        root.appendChild(seg);
-        this._segments.push(seg);
-      }
+      /* stem: single smooth Catmull-Rom <path>, updated each tick */
+      this._stemPath = svgEl('path', {
+        fill:              'none',
+        stroke:            color,
+        'stroke-width':    '3.5',
+        'stroke-linecap':  'round',
+        'stroke-linejoin': 'round',
+        filter:            'url(#cGlow)',
+        opacity:           '0.9',
+      });
+      root.appendChild(this._stemPath);
 
       /* leaves: 3 pairs (left + right) at s = 0.28, 0.52, 0.70 */
       /* leaf shape: pointed almond, base at (0,0), tip at (0,-26) */
@@ -187,7 +206,9 @@
     tick(t, W, H) {
       const T       = t + this._timeOffset;
       const rootX   = W * this._rootXFrac;
-      const rootY   = H * this._rootYFrac;
+      const rootY   = this._footer
+        ? Math.min(H, this._footer.getBoundingClientRect().top)
+        : H * this._rootYFrac;
       const stemH   = H * this._stemHFrac;
 
       /* sample stem points: s=0 at root, s=1 at tip */
@@ -197,24 +218,15 @@
         const y = rootY - s * stemH;
 
         /* two sine waves with different frequencies produce organic winding */
-        const A1 = W * 0.16, f1 = 1.3, spd1 = 0.24;
-        const A2 = W * 0.07, f2 = 3.1, spd2 = 0.47;
+        const A1 = W * 0.28, f1 = 1.4, spd1 = 0.28;
+        const A2 = W * 0.12, f2 = 3.1, spd2 = 0.51;
         const waveX = A1 * Math.sin(f1 * s * Math.PI * 2 + T * spd1)
                     + A2 * Math.sin(f2 * s * Math.PI * 2 + T * spd2);
         pts.push({ x: rootX + waveX, y });
       }
 
-      /* update tapered stem segments */
-      for (let i = 0; i < SAMPLES; i++) {
-        const s  = i / SAMPLES;
-        const sw = lerp(5.5, 1.1, s);
-        const seg = this._segments[i];
-        seg.setAttribute('x1', f(pts[i].x));
-        seg.setAttribute('y1', f(pts[i].y));
-        seg.setAttribute('x2', f(pts[i + 1].x));
-        seg.setAttribute('y2', f(pts[i + 1].y));
-        seg.setAttribute('stroke-width', f(sw));
-      }
+      /* update stem path */
+      this._stemPath.setAttribute('d', catmullRomPath(pts));
 
       /* update leaves */
       for (const { el, sFrac, side } of this._leaves) {

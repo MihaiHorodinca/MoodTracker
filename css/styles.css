@@ -892,6 +892,8 @@ body {
 
 /* ---------- Footer ---------------------------------------- */
 .site-footer {
+  position: relative;
+  z-index: 1;
   text-align: center;
   padding: 1.25rem;
   font-size: 0.78rem;
