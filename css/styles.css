@@ -1070,3 +1070,20 @@ body {
   border-color: var(--clr-primary);
   color: var(--clr-primary);
 }
+
+/* ── Creature ──────────────────────────────────────────────── */
+.creature-left {
+  position: fixed;
+  left: 0;
+  bottom: 0;
+  width: calc(50vw - 360px);
+  height: 100vh;
+  pointer-events: none;
+  overflow: visible;
+  display: none;
+  z-index: 0;
+}
+
+@media (min-width: 900px) {
+  .creature-left { display: block; }
+}
